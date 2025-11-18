@@ -756,16 +756,16 @@ const HF_BASE_URL = "https://huggingface.co/datasets/114-Digital-Image-Processin
 
 const MODELS = [
     {
-        id: "bicycle",
-        name: "Bicycle Scene",
-        folder: "bicycle",
-        splatFile: "bicycle.splat"
-    },
-    {
         id: "truck",
         name: "Truck Scene",
         folder: "truck",
         splatFile: "truck.splat"
+    },
+    {
+        id: "bicycle",
+        name: "Bicycle Scene",
+        folder: "bicycle",
+        splatFile: "bicycle.splat"
     }
 ];
 
