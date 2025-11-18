@@ -652,6 +652,27 @@ function createWorker(self) {
     };
 }
 
+async function fetchImagesFromHF(folderName) {
+    const repoId = "114-Digital-Image-Processing-Group18/splat-data";
+    const path = `${folderName}/images`;
+    // Hugging Face Tree API endpoint
+    const apiUrl = `https://huggingface.co/api/datasets/${repoId}/tree/main/${path}`;
+
+    try {
+        const res = await fetch(apiUrl);
+        if (!res.ok) throw new Error("Failed to list images from HF API");
+        
+        const files = await res.json();
+        return files
+            .filter(f => f.type === "file" && /\.(jpg|jpeg|png|webp)$/i.test(f.path))
+            .map(f => f.path.split('/').pop())
+            .sort();
+    } catch (err) {
+        console.warn("Auto-detect images failed:", err);
+        return [];
+    }
+}
+
 const vertexShaderSource = `
 #version 300 es
 precision highp float;
@@ -738,15 +759,13 @@ const MODELS = [
         id: "bicycle",
         name: "Bicycle Scene",
         folder: "bicycle",
-        splatFile: "bicycle.splat",
-        images: ["001.jpeg", "002.jpeg"] 
+        splatFile: "bicycle.splat"
     },
     {
         id: "truck",
         name: "Truck Scene",
         folder: "truck",
-        splatFile: "truck.splat",
-        images: ["001.jpeg", "002.jpeg"] 
+        splatFile: "truck.splat"
     }
 ];
 
@@ -952,18 +971,28 @@ async function main() {
         viewMatrix = defaultViewMatrix; 
     });
 
-    function updateGallery(modelConfig) {
+    async function updateGallery(modelConfig) {
+        gallery.innerHTML = "<div style='color:#ccc; font-size:12px; padding:10px;'>Loading images...</div>"; 
+        
+        let images = modelConfig.images;
+
+        if (!images || images.length === 0) {
+            images = await fetchImagesFromHF(modelConfig.folder);
+        }
+
         gallery.innerHTML = "";
-        if(!modelConfig.images || modelConfig.images.length === 0) {
-            gallery.innerHTML = "<div style='color:#666; font-size:12px; padding:10px;'>No source images available.</div>";
+
+        if (!images || images.length === 0) {
+            gallery.innerHTML = "<div style='color:#666; font-size:12px; padding:10px;'>No source images found.</div>";
             return;
         }
 
-        modelConfig.images.forEach(imgName => {
+        images.forEach(imgName => {
             const imgUrl = `${HF_BASE_URL}${modelConfig.folder ? modelConfig.folder + '/' : ''}images/${imgName}`;
             const img = document.createElement("img");
             img.src = imgUrl;
             img.className = "gallery-item";
+            img.loading = "lazy";
             img.onclick = () => {
                 lightboxImg.src = imgUrl;
                 lightbox.classList.add("active");
