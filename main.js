@@ -731,110 +731,93 @@ void main () {
 
 `.trim();
 
+const HF_BASE_URL = "https://huggingface.co/datasets/114-Digital-Image-Processing-Group18/splat-data/resolve/main/";
+
+const MODELS = [
+    {
+        id: "bicycle",
+        name: "Bicycle Scene",
+        folder: "bicycle",
+        splatFile: "bicycle.splat",
+        images: ["001.jpeg", "002.jpeg"] 
+    },
+    {
+        id: "truck",
+        name: "Truck Scene",
+        folder: "truck",
+        splatFile: "truck.splat",
+        images: ["001.jpeg", "002.jpeg"] 
+    }
+];
+
 let defaultViewMatrix = [
     0.47, 0.04, 0.88, 0, -0.11, 0.99, 0.02, 0, -0.88, -0.11, 0.47, 0, 0.07,
     0.03, 6.55, 1,
 ];
 let viewMatrix = defaultViewMatrix;
+
 async function main() {
-    let carousel = true;
-    const params = new URLSearchParams(location.search);
-    try {
-        viewMatrix = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-        carousel = false;
-    } catch (err) {}
-    const url = new URL(
-        // "nike.splat",
-        // location.href,
-        params.get("url") || "stele/stele.splat",
-        "https://huggingface.co/datasets/114-Digital-Image-Processing-Group18/splat-data/resolve/main/",
-    );
-    const req = await fetch(url, {
-        mode: "cors", // no-cors, *cors, same-origin
-        credentials: "omit", // include, *same-origin, omit
-    });
-    console.log(req);
-    if (req.status != 200)
-        throw new Error(req.status + " Unable to load " + req.url);
-
-    const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
-    const reader = req.body.getReader();
-    let splatData = new Uint8Array(req.headers.get("content-length"));
-
-    const downsample =
-        splatData.length / rowLength > 500000 ? 1 : 1 / devicePixelRatio;
-    console.log(splatData.length / rowLength, downsample);
-
-    const worker = new Worker(
-        URL.createObjectURL(
-            new Blob(["(", createWorker.toString(), ")(self)"], {
-                type: "application/javascript",
-            }),
-        ),
-    );
+    let downsample = 1 / devicePixelRatio;
+    let activeKeys = [];
+    let currentCameraIndex = 0;
+    
+    let jumpDelta = 0;
+    let vertexCount = 0;
+    let lastFrame = 0;
+    let avgFps = 0;
+    let start = Date.now();
+    let carousel = false;
+    let projectionMatrix;
 
     const canvas = document.getElementById("canvas");
     const fps = document.getElementById("fps");
     const camid = document.getElementById("camid");
-
-    let projectionMatrix;
-
-    const gl = canvas.getContext("webgl2", {
-        antialias: false,
-    });
+    const progress = document.getElementById("progress");
+    const spinner = document.getElementById("spinner");
+    
+    const gl = canvas.getContext("webgl2", { antialias: false });
 
     const vertexShader = gl.createShader(gl.VERTEX_SHADER);
     gl.shaderSource(vertexShader, vertexShaderSource);
     gl.compileShader(vertexShader);
-    if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS))
-        console.error(gl.getShaderInfoLog(vertexShader));
+    if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(vertexShader));
 
     const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
     gl.shaderSource(fragmentShader, fragmentShaderSource);
     gl.compileShader(fragmentShader);
-    if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS))
-        console.error(gl.getShaderInfoLog(fragmentShader));
+    if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(fragmentShader));
 
     const program = gl.createProgram();
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
     gl.linkProgram(program);
     gl.useProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(program));
 
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS))
-        console.error(gl.getProgramInfoLog(program));
-
-    gl.disable(gl.DEPTH_TEST); // Disable depth testing
-
-    // Enable blending
+    // Setup GL State
+    gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
-    gl.blendFuncSeparate(
-        gl.ONE_MINUS_DST_ALPHA,
-        gl.ONE,
-        gl.ONE_MINUS_DST_ALPHA,
-        gl.ONE,
-    );
+    gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ONE_MINUS_DST_ALPHA, gl.ONE);
     gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
 
+    // Uniforms & Attributes setup
     const u_projection = gl.getUniformLocation(program, "projection");
     const u_viewport = gl.getUniformLocation(program, "viewport");
     const u_focal = gl.getUniformLocation(program, "focal");
     const u_view = gl.getUniformLocation(program, "view");
-
-    // positions
+    const u_textureLocation = gl.getUniformLocation(program, "u_texture");
+    
+    // Vertex Buffer Setup 
     const triangleVertices = new Float32Array([-2, -2, 2, -2, 2, 2, -2, 2]);
     const vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, triangleVertices, gl.STATIC_DRAW);
     const a_position = gl.getAttribLocation(program, "position");
     gl.enableVertexAttribArray(a_position);
-    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
     gl.vertexAttribPointer(a_position, 2, gl.FLOAT, false, 0, 0);
 
-    var texture = gl.createTexture();
+    const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
-
-    var u_textureLocation = gl.getUniformLocation(program, "u_texture");
     gl.uniform1i(u_textureLocation, 0);
 
     const indexBuffer = gl.createBuffer();
@@ -844,69 +827,25 @@ async function main() {
     gl.vertexAttribIPointer(a_index, 1, gl.INT, false, 0, 0);
     gl.vertexAttribDivisor(a_index, 1);
 
-    const resize = () => {
-        gl.uniform2fv(u_focal, new Float32Array([camera.fx, camera.fy]));
+    const worker = new Worker(
+        URL.createObjectURL(
+            new Blob(["(", createWorker.toString(), ")(self)"], {
+                type: "application/javascript",
+            }),
+        ),
+    );
 
-        projectionMatrix = getProjectionMatrix(
-            camera.fx,
-            camera.fy,
-            innerWidth,
-            innerHeight,
-        );
-
-        gl.uniform2fv(u_viewport, new Float32Array([innerWidth, innerHeight]));
-
-        gl.canvas.width = Math.round(innerWidth / downsample);
-        gl.canvas.height = Math.round(innerHeight / downsample);
-        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-        gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
-    };
-
-    window.addEventListener("resize", resize);
-    resize();
-
+    // Worker Message Handling
     worker.onmessage = (e) => {
         if (e.data.buffer) {
-            splatData = new Uint8Array(e.data.buffer);
-            if (e.data.save) {
-                const blob = new Blob([splatData.buffer], {
-                    type: "application/octet-stream",
-                });
-                const link = document.createElement("a");
-                link.download = "model.splat";
-                link.href = URL.createObjectURL(blob);
-                document.body.appendChild(link);
-                link.click();
-            }
         } else if (e.data.texdata) {
             const { texdata, texwidth, texheight } = e.data;
-            // console.log(texdata)
             gl.bindTexture(gl.TEXTURE_2D, texture);
-            gl.texParameteri(
-                gl.TEXTURE_2D,
-                gl.TEXTURE_WRAP_S,
-                gl.CLAMP_TO_EDGE,
-            );
-            gl.texParameteri(
-                gl.TEXTURE_2D,
-                gl.TEXTURE_WRAP_T,
-                gl.CLAMP_TO_EDGE,
-            );
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-            gl.texImage2D(
-                gl.TEXTURE_2D,
-                0,
-                gl.RGBA32UI,
-                texwidth,
-                texheight,
-                0,
-                gl.RGBA_INTEGER,
-                gl.UNSIGNED_INT,
-                texdata,
-            );
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, texwidth, texheight, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, texdata);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, texture);
         } else if (e.data.depthIndex) {
@@ -917,8 +856,129 @@ async function main() {
         }
     };
 
-    let activeKeys = [];
-    let currentCameraIndex = 0;
+    let currentController = null;
+
+    async function loadScene(modelConfig) {
+        spinner.style.display = "";
+        progress.style.display = "";
+        progress.style.width = "0%";
+        vertexCount = 0;
+        
+        if (currentController) currentController.abort();
+        currentController = new AbortController();
+
+        try {
+            let splatUrl = HF_BASE_URL;
+            if (modelConfig.folder) splatUrl += modelConfig.folder + "/";
+            splatUrl += modelConfig.splatFile;
+
+            console.log("Loading:", splatUrl);
+
+            const req = await fetch(splatUrl, {
+                mode: "cors",
+                credentials: "omit",
+                signal: currentController.signal
+            });
+
+            if (req.status != 200) throw new Error(req.status + " Unable to load " + req.url);
+
+            const reader = req.body.getReader();
+            const contentLength = +req.headers.get("content-length");
+            const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
+            let splatData = new Uint8Array(contentLength);
+            let bytesRead = 0;
+            let last_percent = 0; 
+
+            updateGallery(modelConfig);
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                splatData.set(value, bytesRead);
+                bytesRead += value.length;
+
+                const percent = (bytesRead / contentLength) * 100;
+                progress.style.width = percent + "%";
+
+                if (percent - last_percent >= 2.0) {
+                    last_percent = percent;
+                    worker.postMessage({
+                        buffer: splatData.buffer,
+                        vertexCount: Math.floor(bytesRead / rowLength),
+                    });
+                }
+            }
+
+            worker.postMessage({
+                buffer: splatData.buffer,
+                vertexCount: Math.floor(bytesRead / rowLength),
+            });
+
+            const loadedVertexCount = Math.floor(bytesRead / rowLength);
+            if (loadedVertexCount > 500000) {
+                downsample = 1;
+                window.dispatchEvent(new Event('resize')); 
+            }
+
+            progress.style.display = "none";
+            spinner.style.display = "none";
+
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                console.log('Fetch aborted');
+            } else {
+                console.error(err);
+                document.getElementById("message").innerText = err.toString();
+            }
+        }
+    }
+
+    const selector = document.getElementById("scene-selector");
+    const gallery = document.getElementById("gallery");
+    const lightbox = document.getElementById("lightbox");
+    const lightboxImg = document.getElementById("lightbox-img");
+
+    MODELS.forEach((model, index) => {
+        const option = document.createElement("option");
+        option.value = index;
+        option.text = model.name;
+        selector.appendChild(option);
+    });
+
+    selector.addEventListener("change", (e) => {
+        const modelIndex = e.target.value;
+        loadScene(MODELS[modelIndex]);
+        viewMatrix = defaultViewMatrix; 
+    });
+
+    function updateGallery(modelConfig) {
+        gallery.innerHTML = "";
+        if(!modelConfig.images || modelConfig.images.length === 0) {
+            gallery.innerHTML = "<div style='color:#666; font-size:12px; padding:10px;'>No source images available.</div>";
+            return;
+        }
+
+        modelConfig.images.forEach(imgName => {
+            const imgUrl = `${HF_BASE_URL}${modelConfig.folder ? modelConfig.folder + '/' : ''}images/${imgName}`;
+            const img = document.createElement("img");
+            img.src = imgUrl;
+            img.className = "gallery-item";
+            img.onclick = () => {
+                lightboxImg.src = imgUrl;
+                lightbox.classList.add("active");
+            };
+            gallery.appendChild(img);
+        });
+    }
+
+    lightbox.addEventListener("click", () => {
+        lightbox.classList.remove("active");
+    });
+
+    if(MODELS.length > 0) {
+        loadScene(MODELS[0]);
+    }
 
     window.addEventListener("keydown", (e) => {
         // if (document.activeElement != document.body) return;
@@ -1160,12 +1220,27 @@ async function main() {
         { passive: false },
     );
 
-    let jumpDelta = 0;
-    let vertexCount = 0;
+    const resize = () => {
+        gl.uniform2fv(u_focal, new Float32Array([camera.fx, camera.fy]));
 
-    let lastFrame = 0;
-    let avgFps = 0;
-    let start = 0;
+        projectionMatrix = getProjectionMatrix(
+            camera.fx,
+            camera.fy,
+            innerWidth,
+            innerHeight,
+        );
+
+        gl.uniform2fv(u_viewport, new Float32Array([innerWidth, innerHeight]));
+
+        gl.canvas.width = Math.round(innerWidth / downsample);
+        gl.canvas.height = Math.round(innerHeight / downsample);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+        gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
+    };
+    window.addEventListener("resize", resize);
+
+    resize();
 
     window.addEventListener("gamepadconnected", (e) => {
         const gp = navigator.getGamepads()[e.gamepad.index];
@@ -1356,126 +1431,19 @@ async function main() {
         avgFps = avgFps * 0.9 + currentFps * 0.1;
 
         if (vertexCount > 0) {
-            document.getElementById("spinner").style.display = "none";
             gl.uniformMatrix4fv(u_view, false, actualViewMatrix);
             gl.clear(gl.COLOR_BUFFER_BIT);
             gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, vertexCount);
         } else {
             gl.clear(gl.COLOR_BUFFER_BIT);
-            document.getElementById("spinner").style.display = "";
-            start = Date.now() + 2000;
         }
-        const progress = (100 * vertexCount) / (splatData.length / rowLength);
-        if (progress < 100) {
-            document.getElementById("progress").style.width = progress + "%";
-        } else {
-            document.getElementById("progress").style.display = "none";
-        }
+        
         fps.innerText = Math.round(avgFps) + " fps";
-        if (isNaN(currentCameraIndex)) {
-            camid.innerText = "";
-        }
         lastFrame = now;
         requestAnimationFrame(frame);
     };
 
     frame();
-
-    const isPly = (splatData) =>
-        splatData[0] == 112 &&
-        splatData[1] == 108 &&
-        splatData[2] == 121 &&
-        splatData[3] == 10;
-
-    const selectFile = (file) => {
-        const fr = new FileReader();
-        if (/\.json$/i.test(file.name)) {
-            fr.onload = () => {
-                cameras = JSON.parse(fr.result);
-                viewMatrix = getViewMatrix(cameras[0]);
-                projectionMatrix = getProjectionMatrix(
-                    camera.fx / downsample,
-                    camera.fy / downsample,
-                    canvas.width,
-                    canvas.height,
-                );
-                gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
-
-                console.log("Loaded Cameras");
-            };
-            fr.readAsText(file);
-        } else {
-            stopLoading = true;
-            fr.onload = () => {
-                splatData = new Uint8Array(fr.result);
-                console.log("Loaded", Math.floor(splatData.length / rowLength));
-
-                if (isPly(splatData)) {
-                    // ply file magic header means it should be handled differently
-                    worker.postMessage({ ply: splatData.buffer, save: true });
-                } else {
-                    worker.postMessage({
-                        buffer: splatData.buffer,
-                        vertexCount: Math.floor(splatData.length / rowLength),
-                    });
-                }
-            };
-            fr.readAsArrayBuffer(file);
-        }
-    };
-
-    window.addEventListener("hashchange", (e) => {
-        try {
-            viewMatrix = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-            carousel = false;
-        } catch (err) {}
-    });
-
-    const preventDefault = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-    };
-    document.addEventListener("dragenter", preventDefault);
-    document.addEventListener("dragover", preventDefault);
-    document.addEventListener("dragleave", preventDefault);
-    document.addEventListener("drop", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        selectFile(e.dataTransfer.files[0]);
-    });
-
-    let bytesRead = 0;
-    let lastVertexCount = -1;
-    let stopLoading = false;
-
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done || stopLoading) break;
-
-        splatData.set(value, bytesRead);
-        bytesRead += value.length;
-
-        if (vertexCount > lastVertexCount) {
-            if (!isPly(splatData)) {
-                worker.postMessage({
-                    buffer: splatData.buffer,
-                    vertexCount: Math.floor(bytesRead / rowLength),
-                });
-            }
-            lastVertexCount = vertexCount;
-        }
-    }
-    if (!stopLoading) {
-        if (isPly(splatData)) {
-            // ply file magic header means it should be handled differently
-            worker.postMessage({ ply: splatData.buffer, save: false });
-        } else {
-            worker.postMessage({
-                buffer: splatData.buffer,
-                vertexCount: Math.floor(bytesRead / rowLength),
-            });
-        }
-    }
 }
 
 main().catch((err) => {
