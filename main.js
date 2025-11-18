@@ -1472,6 +1472,13 @@ async function main() {
         requestAnimationFrame(frame);
     };
 
+    const toggleBtn = document.getElementById("sidebar-toggle");
+    if (toggleBtn) {
+        toggleBtn.addEventListener("click", () => {
+            document.body.classList.toggle("sidebar-open");
+        });
+    }
+
     frame();
 }
 
