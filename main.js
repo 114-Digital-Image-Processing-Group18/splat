@@ -793,13 +793,15 @@ async function main() {
     let start = Date.now();
     let carousel = false;
     let projectionMatrix;
+    const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
+    let totalSplatsToLoad = 0;
 
     const canvas = document.getElementById("canvas");
     const fps = document.getElementById("fps");
     const camid = document.getElementById("camid");
     const progress = document.getElementById("progress");
     const spinner = document.getElementById("spinner");
-    
+
     const gl = canvas.getContext("webgl2", { antialias: false });
 
     const vertexShader = gl.createShader(gl.VERTEX_SHADER);
@@ -881,6 +883,29 @@ async function main() {
         }
     };
 
+    const resize = () => {
+        if (!camera) return;
+
+        gl.uniform2fv(u_focal, new Float32Array([camera.fx, camera.fy]));
+
+        projectionMatrix = getProjectionMatrix(
+            camera.fx,
+            camera.fy,
+            innerWidth,
+            innerHeight,
+        );
+
+        gl.uniform2fv(u_viewport, new Float32Array([innerWidth, innerHeight]));
+
+        gl.canvas.width = Math.round(innerWidth / downsample);
+        gl.canvas.height = Math.round(innerHeight / downsample);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+
+        gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
+    };
+    window.addEventListener("resize", resize);
+
+
     let currentController = null;
 
     async function loadScene(modelConfig) {
@@ -888,7 +913,8 @@ async function main() {
         progress.style.display = "";
         progress.style.width = "0%";
         vertexCount = 0;
-        
+        totalSplatsToLoad = 0;
+
         if (currentController) currentController.abort();
         currentController = new AbortController();
 
@@ -909,7 +935,7 @@ async function main() {
 
             const reader = req.body.getReader();
             const contentLength = +req.headers.get("content-length");
-            const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
+            totalSplatsToLoad = contentLength / rowLength;
             let splatData = new Uint8Array(contentLength);
             let bytesRead = 0;
             let last_percent = 0; 
@@ -943,7 +969,7 @@ async function main() {
             const loadedVertexCount = Math.floor(bytesRead / rowLength);
             if (loadedVertexCount > 500000) {
                 downsample = 1;
-                window.dispatchEvent(new Event('resize')); 
+                resize(); 
             }
 
             progress.style.display = "none";
@@ -1011,41 +1037,45 @@ async function main() {
         lightbox.classList.remove("active");
     });
 
-    if(MODELS.length > 0) {
-        loadScene(MODELS[0]);
-    }
-
     window.addEventListener("keydown", (e) => {
         // if (document.activeElement != document.body) return;
         carousel = false;
         if (!activeKeys.includes(e.code)) activeKeys.push(e.code);
         if (/\d/.test(e.key)) {
-            currentCameraIndex = parseInt(e.key);
-            camera = cameras[currentCameraIndex];
-            viewMatrix = getViewMatrix(camera);
+            let idx = parseInt(e.key);
+            if(cameras[idx]) {
+                currentCameraIndex = idx;
+                camera = cameras[currentCameraIndex];
+                viewMatrix = getViewMatrix(camera);
+                resize();
+                camid.innerText = "cam " + currentCameraIndex;
+            }
         }
         if (["-", "_"].includes(e.key)) {
-            currentCameraIndex =
-                (currentCameraIndex + cameras.length - 1) % cameras.length;
-            viewMatrix = getViewMatrix(cameras[currentCameraIndex]);
+            currentCameraIndex = (currentCameraIndex + cameras.length - 1) % cameras.length;
+            camera = cameras[currentCameraIndex];
+            viewMatrix = getViewMatrix(camera);
+            resize();
+            camid.innerText = "cam " + currentCameraIndex;
         }
         if (["+", "="].includes(e.key)) {
             currentCameraIndex = (currentCameraIndex + 1) % cameras.length;
-            viewMatrix = getViewMatrix(cameras[currentCameraIndex]);
+            camera = cameras[currentCameraIndex];
+            viewMatrix = getViewMatrix(camera);
+            resize();
+            camid.innerText = "cam " + currentCameraIndex;
         }
-        camid.innerText = "cam  " + currentCameraIndex;
-        if (e.code == "KeyV") {
-            location.hash =
-                "#" +
-                JSON.stringify(
-                    viewMatrix.map((k) => Math.round(k * 100) / 100),
-                );
-            camid.innerText = "";
-        } else if (e.code === "KeyP") {
+
+        if (e.code === "KeyP") {
             carousel = true;
             camid.innerText = "";
         }
+        if (e.code == "KeyV") {
+            location.hash = "#" + JSON.stringify(viewMatrix.map((k) => Math.round(k * 100) / 100));
+            camid.innerText = "View Saved";
+        }
     });
+
     window.addEventListener("keyup", (e) => {
         activeKeys = activeKeys.filter((k) => k !== e.code);
     });
@@ -1255,27 +1285,41 @@ async function main() {
         { passive: false },
     );
 
-    const resize = () => {
-        gl.uniform2fv(u_focal, new Float32Array([camera.fx, camera.fy]));
-
-        projectionMatrix = getProjectionMatrix(
-            camera.fx,
-            camera.fy,
-            innerWidth,
-            innerHeight,
-        );
-
-        gl.uniform2fv(u_viewport, new Float32Array([innerWidth, innerHeight]));
-
-        gl.canvas.width = Math.round(innerWidth / downsample);
-        gl.canvas.height = Math.round(innerHeight / downsample);
-        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-
-        gl.uniformMatrix4fv(u_projection, false, projectionMatrix);
+    const preventDefault = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
     };
-    window.addEventListener("resize", resize);
+    document.addEventListener("dragenter", preventDefault);
+    document.addEventListener("dragover", preventDefault);
+    document.addEventListener("dragleave", preventDefault);
+    document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
 
-    resize();
+        if (/\.json$/i.test(file.name)) {
+            const fr = new FileReader();
+            fr.onload = () => {
+                try {
+                    const loadedCameras = JSON.parse(fr.result);
+                    if (Array.isArray(loadedCameras) && loadedCameras.length > 0) {
+                        cameras = loadedCameras;
+                        currentCameraIndex = 0;
+                        camera = cameras[0];
+                        viewMatrix = getViewMatrix(camera);
+                        resize();
+                        console.log("Loaded cameras from Drop");
+                        camid.innerText = "Loaded " + cameras.length + " cams";
+                    }
+                } catch(err) {
+                    console.error("Failed to parse cameras.json", err);
+                }
+            };
+            fr.readAsText(file);
+        }
+    });
 
     window.addEventListener("gamepadconnected", (e) => {
         const gp = navigator.getGamepads()[e.gamepad.index];
@@ -1466,11 +1510,26 @@ async function main() {
         avgFps = avgFps * 0.9 + currentFps * 0.1;
 
         if (vertexCount > 0) {
+            document.getElementById("spinner").style.display = "none";
             gl.uniformMatrix4fv(u_view, false, actualViewMatrix);
             gl.clear(gl.COLOR_BUFFER_BIT);
             gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, vertexCount);
         } else {
             gl.clear(gl.COLOR_BUFFER_BIT);
+            document.getElementById("spinner").style.display = "";
+            start = Date.now() + 2000;
+        }
+        if (totalSplatsToLoad > 0) {
+            const progress = (100 * vertexCount) / totalSplatsToLoad;
+            if (progress < 100) {
+                document.getElementById("progress").style.width = progress + "%";
+            } else {
+                document.getElementById("progress").style.display = "none";
+            }
+        }
+        fps.innerText = Math.round(avgFps) + " fps";
+        if (isNaN(currentCameraIndex)) {
+            camid.innerText = "";
         }
         
         fps.innerText = Math.round(avgFps) + " fps";
@@ -1485,7 +1544,11 @@ async function main() {
         });
     }
 
-    frame();
+    resize();
+    requestAnimationFrame(frame);
+    if(MODELS.length > 0) {
+        loadScene(MODELS[0]);
+    }
 }
 
 main().catch((err) => {
