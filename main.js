@@ -766,6 +766,12 @@ const MODELS = [
         name: "Bicycle Scene",
         folder: "bicycle",
         splatFile: "bicycle.splat"
+    },
+    {
+        id: "stele",
+        name: "NTUST Campus Stele Scene",
+        folder: "stele",
+        splatFile: "stele.splat"
     }
 ];
 
