@@ -762,12 +762,6 @@ const MODELS = [
         splatFile: "stele.splat"
     },
     {
-        id: "truck",
-        name: "Truck Scene",
-        folder: "truck",
-        splatFile: "truck.splat"
-    },
-    {
         id: "bicycle",
         name: "Bicycle Scene",
         folder: "bicycle",
